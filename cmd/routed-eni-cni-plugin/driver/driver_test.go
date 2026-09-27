@@ -5414,3 +5414,19 @@ func isUnicastMAC(mac string) bool {
 	}
 	return addr[0]&0x1 == 0 && addr[0]&0x2 == 0x02
 }
+
+func TestDerivedHostVethMAC(t *testing.T) {
+	a := derivedHostVethMAC("eni04ad4fbc1d0", "/var/run/netns/cni-1")
+	assert.Equal(t, a, derivedHostVethMAC("eni04ad4fbc1d0", "/var/run/netns/cni-1"), "deterministic")
+	assert.NotEqual(t, a, derivedHostVethMAC("eni04ad4fbc1d0", "/var/run/netns/cni-2"), "recreated sandbox gets a new MAC")
+	assert.NotEqual(t, a, derivedHostVethMAC("eni1111111111a", "/var/run/netns/cni-1"), "different veth gets a different MAC")
+	assert.Len(t, a, 6)
+	assert.Equal(t, byte(2), a[0]&2, "locally administered bit set")
+	assert.Equal(t, byte(0), a[0]&1, "unicast")
+	seen := map[string]bool{}
+	for i := 0; i < 5000; i++ {
+		m := derivedHostVethMAC(fmt.Sprintf("eni%011d", i), "/var/run/netns/x").String()
+		assert.False(t, seen[m], "collision at %d", i)
+		seen[m] = true
+	}
+}

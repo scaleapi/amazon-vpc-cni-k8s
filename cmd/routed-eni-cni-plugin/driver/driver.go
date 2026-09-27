@@ -16,6 +16,7 @@ package driver
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"os"
@@ -432,14 +433,11 @@ func (n *linuxNetwork) setupVeth(hostVethName string, contVethName string, netns
 		}
 		log.Debugf("Successfully deleted old hostVeth %s", hostVethName)
 	}
-	macAddrStr, err := NewMACGenerator().generateUniqueRandomMAC()
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to generate Unique MAC addr for host side veth")
-	}
-	macAddr, err := net.ParseMAC(macAddrStr)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to parse unique generated mac addr %s", macAddrStr)
-	}
+	// Derive the host-side MAC from this sandbox's identity instead of drawing a random one
+	// and checking it against a dump of every link on the host: under many concurrent CNI
+	// ADDs that dump is interrupted (NLM_F_DUMP_INTR) faster than it can be retried, and
+	// the ADD fails (aws/amazon-vpc-cni-k8s#3576).
+	macAddr := derivedHostVethMAC(hostVethName, netnsPath)
 	createVethContext := newCreateVethPairContext(contVethName, hostVethName, ipAddr, mtu, index, macAddr, log)
 	if err := n.ns.WithNetNSPath(netnsPath, createVethContext.run); err != nil {
 		return nil, errors.Wrap(err, "failed to setup veth network")
@@ -742,4 +740,15 @@ func (m MACGenerator) generateUniqueRandomMAC() (string, error) {
 		}
 	}
 	return "", errors.New(fmt.Sprintf("failed to generate unique mac after %d attempts.", MAX_MAC_GENERATION_ATTEMPTS))
+}
+
+// derivedHostVethMAC returns a locally administered unicast MAC derived from the host veth
+// name (unique on the node) and the sandbox's netns path (unique per sandbox, so a recreated
+// sandbox gets a fresh MAC). The 46 free bits give the same collision space as a random MAC.
+func derivedHostVethMAC(hostVethName, netnsPath string) net.HardwareAddr {
+	sum := sha256.Sum256([]byte(hostVethName + "\x00" + netnsPath))
+	mac := net.HardwareAddr(append([]byte(nil), sum[:6]...))
+	// Set the local bit and unset the multicast bit
+	mac[0] = (mac[0] | 2) & 0xfe
+	return mac
 }
