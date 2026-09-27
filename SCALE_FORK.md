@@ -19,20 +19,44 @@ unicast bit kept), so the dump is no longer needed. On a 500-pod burst onto one 
 c6a.48xlarge in staging, veth-MAC failures went from 758 to 0, CNI ADDs from 1,258 to 500, and
 pod start p95 from 167 s to 93 s.
 
-## Rules
+## Source only
 
-- **Exactly one patch.** Each `scale/vX.Y.Z` branch is upstream tag `vX.Y.Z` plus the
-  derived-MAC patch, this file, and the release workflow. It must not diverge beyond that. Any
-  other change goes upstream, not here.
-- **One branch per upstream base.** To move to a new upstream release, cut a new
-  `scale/vX.Y.Z` branch from that tag and reapply the patch. Don't rebase or merge an existing
-  branch.
+The fork holds source and tags only. It has no CI (upstream's `.github/workflows/` is removed
+on these branches) and publishes no release artifacts or images.
+
+Consumers (our golden-AMI build) compile the plugin themselves from a pinned tag **and** the
+commit SHA it points at, with Go 1.26.8 to match the EKS build, then record the output's
+sha256:
+
+```sh
+git checkout <tag>          # then verify: git rev-parse HEAD == <pinned commit SHA>
+GOTOOLCHAIN=go1.26.8 go version   # record the toolchain used
+GOTOOLCHAIN=go1.26.8 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  go build -trimpath -buildmode=pie -ldflags "-s -w" -o aws-cni ./cmd/routed-eni-cni-plugin
+sha256sum aws-cni           # record this
+```
+
+With `-trimpath`, the same tag, toolchain and target should give the same bytes, so anyone can
+rebuild the binary and check the recorded sha256.
+
+> **Warning: do not set `-X main.version`, or any `-X` flag, on the plugin.** The plugin sends
+> `main.version` to ipamd as `ClientVersion` on every Add/Del
+> (`cmd/routed-eni-cni-plugin/cni.go`). ipamd rejects any request whose `ClientVersion` differs
+> from its own version (`validateVersion` in `pkg/ipamd/rpc_handler.go`). The EKS-managed ipamd
+> we run beside this plugin reports an empty version. A stamped plugin therefore fails every
+> pod's network setup on the node.
+
+## Branches and tags
+
+- **Branches** are `scale/vX.Y.Z`, one per upstream base, cut from upstream tag `vX.Y.Z`. Each
+  one carries exactly one functional patch (the derived-MAC fix) plus fork-housekeeping commits
+  (this file, removing upstream CI). It must not diverge beyond that. Any other change goes
+  upstream, not here. To move to a new upstream release, cut a new branch from that tag and
+  reapply the patch; don't rebase or merge an existing branch.
 - **Tags** are `vX.Y.Z-scale.N`: the upstream base plus a Scale revision counter starting at 1.
-- **The only published artifact is the `aws-cni` plugin binary** (linux amd64 and arm64, plus
-  `SHA256SUMS`), attached to the GitHub release for the tag by
-  `.github/workflows/scale-release.yml`. It is overlaid on nodes that keep the EKS-managed
-  VPC CNI addon. No container images are built or pushed from this fork.
+  Tags are never moved or reused.
 
-## When to delete it
+## When to drop it
 
-Drop this fork once upstream fixes #3576 in a release, and move back to the stock plugin.
+Drop the fork branch, and move back to the stock plugin, once upstream fixes #3576 in a
+release.
