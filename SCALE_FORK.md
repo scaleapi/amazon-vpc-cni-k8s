@@ -24,20 +24,26 @@ pod start p95 from 167 s to 93 s.
 The fork holds source and tags only. It has no CI (upstream's `.github/workflows/` is removed
 on these branches) and publishes no release artifacts or images.
 
-Consumers (our golden-AMI build) compile the plugin themselves from a pinned tag **and** the
-commit SHA it points at, with Go 1.26.8 to match the EKS build, then record the output's
-sha256:
+Consumers pin a tag and the commit SHA it points at. They fetch the tag, check that it resolves
+to the pinned commit, and build the plugin with Go 1.26.8 to match the EKS build, then record
+the output's sha256:
 
 ```sh
-git checkout <tag>          # then verify: git rev-parse HEAD == <pinned commit SHA>
+git fetch origin tag <tag>
+test "$(git rev-parse '<tag>^{commit}')" = "<pinned commit SHA>"
+git checkout --detach <pinned commit SHA>
 GOTOOLCHAIN=go1.26.8 go version   # record the toolchain used
 GOTOOLCHAIN=go1.26.8 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go build -trimpath -buildmode=pie -ldflags "-s -w" -o aws-cni ./cmd/routed-eni-cni-plugin
+  go build -trimpath -buildvcs=false -buildmode=pie -ldflags "-s -w" \
+  -o aws-cni ./cmd/routed-eni-cni-plugin
 sha256sum aws-cni           # record this
 ```
 
-With `-trimpath`, the same tag, toolchain and target should give the same bytes, so anyone can
-rebuild the binary and check the recorded sha256.
+`-trimpath` drops local paths and `-buildvcs=false` turns off VCS stamping, so the binary
+depends only on the source and the toolchain. Building by tag or by commit, from any checkout
+location, gives the same sha256, and anyone can rebuild it to check the recorded value.
+
+Delivery is moving to a container image (an installer DaemonSet) built from this tag.
 
 > **Warning: do not set `-X main.version`, or any `-X` flag, on the plugin.** The plugin sends
 > `main.version` to ipamd as `ClientVersion` on every Add/Del
